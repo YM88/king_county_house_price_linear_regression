@@ -1,0 +1,239 @@
+---
+title: "King County House Price Prediction using Linear Regression"
+author: "Yashar Mansouri"
+date: "4/16/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen=999)
+```
+
+```{r}
+library(MASS)
+library(car)
+library(psych)
+library(tidyverse)
+```
+
+This dataset contains house sale prices for King County, which includes Seattle. It includes homes sold between May 2014 and May 2015.
+
+Dataset can be found at [kaggle](https://www.kaggle.com/harlfoxem/housesalesprediction/) and contains 21k+ records.
+
+**id**: Unique ID for each home sold
+
+**date**: Date of the home sale
+
+**price**: Price of each home sold \<-- target variable
+
+**bedrooms**: Number of bedrooms
+
+**bathrooms**: Number of bathrooms, where .5 accounts for a room with a toilet but no shower
+
+**sqft_living**: Square footage of the apartments interior living space
+
+**sqft_lot**: Square footage of the land space
+
+**floors**: Number of floors
+
+**waterfront**: - A dummy variable for whether the apartment was overlooking the waterfront or not
+
+**view**: An index from 0 to 4 of how good the view of the property was
+
+**condition**: - An index from 1 to 5 on the condition of the apartment,
+
+**grade**: An index from 1 to 13, where 1-3 falls short of building construction and design, 7 has an average level of construction and design, and 11-13 have a high quality level of construction and design.
+
+**sqft_above**: The square footage of the interior housing space that is above ground level
+
+**sqft_basement**: The square footage of the interior housing space that is below ground level
+
+**yr_built**: The year the house was initially built
+
+**yr_renovated**: The year of the house's last renovation
+
+**zipcode**: What zipcode area the house is in
+
+**lat**: Lattitude
+
+**long**: Longitude
+
+**sqft_living15**: The square footage of interior housing living space for the nearest 15 neighbors
+
+**sqft_lot15**: The square footage of the land lots of the nearest 15 neighbors
+
+```{r}
+df = read_csv("data/kc_house_data.csv")
+glimpse(df)
+```
+
+```{r}
+summary(df)
+```
+
+```{r}
+df[duplicated(df),] #no duplicates
+```
+
+## Initial findings and decisions based on data
+
+Columns to be dropped:
+
+``` {.r}
+['id',
+'date',
+'lat',
+'long']
+```
+
+Quantitative:
+
+``` {.r}
+['price',
+'bedrooms',
+'bathrooms',
+'sqft_living',
+'sqft_lot',
+'floors',
+'view',
+'condition',
+'grade',
+'sqft_above',
+'sqft_basement',
+'yr_built',
+'yr_renovated',
+'sqft_living15',
+'sqft_lot15']
+```
+
+Categorical:
+
+``` {.r}
+['waterfront', 
+'zipcode']
+```
+
+```{r}
+df %>% 
+  select(-c(id, date, long, lat)) -> df
+```
+
+```{r}
+df %>% 
+  mutate(waterfront = as_factor(waterfront),
+         zipcode = as_factor(zipcode)) -> 
+  df
+```
+
+
+```{r fig.height = 15, fig.width = 15, fig.align = "center"}
+
+df %>% slice_sample(n=500) %>% # sampling for 500 values, r is too slow
+  select(-c('waterfront', 'zipcode')) %>% 
+  pairs.panels(method = "pearson", # correlation method
+               hist.col = "#CA64EA",
+               density = TRUE,  # show density plots
+               ellipses = FALSE # show correlation ellipses
+               )
+```
+
+```{r}
+df$waterfront %>% 
+  table()
+```
+
+Out of 21613 records, only 163 has `waterfront`.
+
+```{r}
+df %>% 
+  ggplot(aes(x=waterfront, y=price)) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+
+```{r}
+df %>% 
+  group_by(zipcode) %>% 
+  summarise(count = n()) %>% 
+  arrange(-count) %>% 
+  glimpse()
+```
+
+Highest occuring zip code is **98103** and least occuring is **98039** . There are 70 unique zip codes in total.
+
+Categorical analysis shows that most houses has no `waterfront` and the `zipcode` 98103 is the most occuring one in the dataframe.
+
+
+```{r fig.height = 15, fig.width = 15, fig.align = "center"}
+df %>% 
+  ggplot(aes(x=fct_reorder(as_factor(zipcode), price), y=price)) +
+  geom_boxplot() + 
+  theme_bw() + 
+  labs(x='zipcode') +
+  theme(axis.text.x = element_text(angle = 90))
+```
+zipcode can be a variable that can contribute to better prediction and there are 70 unique zip codes.
+The graph above shows that some areas have significantly different price distributions. Since the numerical value of zipcode cannot be used, it's better to create dummy variables. 
+
+
+
+
+
+```{r fig.height = 5, fig.width = 8, fig.align = "center"}
+df %>% 
+  ggplot(aes(x=fct_reorder(as_factor(view), price), y=price)) +
+  geom_boxplot() + 
+  labs(x='view') +
+  theme_bw()
+```
+
+```{r fig.height = 5, fig.width = 8, fig.align = "center"}
+df %>% 
+  ggplot(aes(x=fct_reorder(as_factor(grade), price), y=price)) +
+  geom_boxplot() + 
+  labs(x='grade') +
+  theme_bw()
+```
+
+It seems it would be ok to use `waterfront`, `view`, and `grade` as is.
+
+```{r}
+reg = lm(price ~ bedrooms + bathrooms + sqft_living + 
+           sqft_lot + floors + waterfront + view + condition + 
+           grade + view + condition + grade + sqft_above + 
+           sqft_basement + yr_built + yr_renovated + sqft_living15 + 
+           sqft_lot15, data=df)
+
+summary(reg)
+```
+
+
+
+
+```{r fig.height = 10, fig.width = 15, fig.align = "center"}
+plot(reg)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
