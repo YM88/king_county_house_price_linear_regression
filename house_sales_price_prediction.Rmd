@@ -1,5 +1,5 @@
 ---
-title: "King County House Price Prediction using Linear Regression"
+title: "King County House Price Prediction using Regression Methods"
 author: "Yashar Mansouri"
 date: "4/16/2021"
 output: pdf_document
@@ -11,11 +11,15 @@ options(scipen=999)
 ```
 
 ```{r}
+library(mltools)
 library(MASS)
 library(car)
 library(psych)
 library(tidyverse)
+library(lubridate)
 ```
+
+# Data Info
 
 This dataset contains house sale prices for King County, which includes Seattle. It includes homes sold between May 2014 and May 2015.
 
@@ -63,6 +67,7 @@ Dataset can be found at [kaggle](https://www.kaggle.com/harlfoxem/housesalespred
 
 **sqft_lot15**: The square footage of the land lots of the nearest 15 neighbors
 
+# Data Import
 ```{r}
 df = read_csv("data/kc_house_data.csv")
 glimpse(df)
@@ -82,10 +87,30 @@ Columns to be dropped:
 
 ``` {.r}
 ['id',
-'date',
 'lat',
 'long']
 ```
+
+What if we fit the model without analyzing the data?
+
+```{r}
+reg = lm(price ~ bedrooms + bathrooms + sqft_living + 
+           sqft_lot + floors + waterfront + view + condition + 
+           grade + view + condition + grade + sqft_above + 
+           sqft_basement + yr_built + yr_renovated + sqft_living15 + 
+           sqft_lot15, data=df)
+
+summary(reg)
+```
+
+
+
+
+```{r fig.height = 10, fig.width = 15, fig.align = "center"}
+plot(reg)
+```
+
+
 
 Quantitative:
 
@@ -116,7 +141,7 @@ Categorical:
 
 ```{r}
 df %>% 
-  select(-c(id, date, long, lat)) -> df
+  select(-c(id, lat, long)) -> df
 ```
 
 ```{r}
@@ -126,17 +151,9 @@ df %>%
   df
 ```
 
+# EDA & Feature Engineering
 
-```{r fig.height = 15, fig.width = 15, fig.align = "center"}
-
-df %>% slice_sample(n=500) %>% # sampling for 500 values, r is too slow
-  select(-c('waterfront', 'zipcode')) %>% 
-  pairs.panels(method = "pearson", # correlation method
-               hist.col = "#CA64EA",
-               density = TRUE,  # show density plots
-               ellipses = FALSE # show correlation ellipses
-               )
-```
+## Categoricals
 
 ```{r}
 df$waterfront %>% 
@@ -177,9 +194,19 @@ df %>%
 zipcode can be a variable that can contribute to better prediction and there are 70 unique zip codes.
 The graph above shows that some areas have significantly different price distributions. Since the numerical value of zipcode cannot be used, it's better to create dummy variables. 
 
+## Quantitative
 
 
+```{r fig.height = 15, fig.width = 15, fig.align = "center"}
 
+df %>% slice_sample(n=500) %>% # sampling for 500 values, r is too slow
+  select(-c('waterfront', 'zipcode')) %>% 
+  pairs.panels(method = "pearson", # correlation method
+               hist.col = "#CA64EA",
+               density = TRUE,  # show density plots
+               ellipses = FALSE # show correlation ellipses
+               )
+```
 
 ```{r fig.height = 5, fig.width = 8, fig.align = "center"}
 df %>% 
@@ -200,21 +227,275 @@ df %>%
 It seems it would be ok to use `waterfront`, `view`, and `grade` as is.
 
 ```{r}
-reg = lm(price ~ bedrooms + bathrooms + sqft_living + 
-           sqft_lot + floors + waterfront + view + condition + 
-           grade + view + condition + grade + sqft_above + 
-           sqft_basement + yr_built + yr_renovated + sqft_living15 + 
-           sqft_lot15, data=df)
+df
+```
+
+# Feature Engineering
+
+## Year Values
+
+```{r}
+# getting sales year and month and age 
+df %>% 
+  mutate(yr_sales = year(date), 
+         month_sales = month(date),
+         age = yr_sales - yr_built) ->
+  df
+
+df[,c("yr_sales", "month_sales", "age")] %>% glimpse()
+```
+
+```{r}
+# getting age_renovated before sales if there has been renovation
+df %>% 
+  mutate(age_renovated = 0,
+         age_renovated = if_else(yr_renovated != 0, 
+                                 yr_sales - yr_renovated, 
+                                 age)) -> df
+
+df[,c("age", "age_renovated")] %>% glimpse()
+```
+
+
+
+
+```{r}
+breaks = c(-2,1,5,10,20,30,50,100000)
+labels = c(0,5,10,20,30,60,100)
+
+df$age_bin = cut(df$age, breaks = breaks, labels = labels)
+
+df %>% 
+  ggplot(aes(x=age_bin)) + 
+  geom_bar() + theme_bw()
+
+```
+```{r}
+breaks = c(-2,1,5,10,20,30,50,100000)
+labels = c(0,5,10,20,30,60,100)
+
+df$age_renovated_bin = cut(df$age_renovated, breaks = breaks, labels = labels)
+
+df %>% 
+  ggplot(aes(x=age_renovated_bin)) + 
+  geom_bar() + theme_bw()
+```
+```{r}
+# converting the age_bin and age_renovated_bin to numericals
+df$age_bin <- as.integer(df$age_bin)
+df$age_renovated_bin <- as.integer(df$age_renovated_bin)
+df$waterfront <- as.integer(df$waterfront)
+```
+
+
+
+```{r}
+# dropping date, yr_built, yr_renovated, 
+
+df %>% 
+  select(-c(date, yr_built, yr_renovated, age, age_renovated)) -> 
+  df
+```
+
+
+```{r}
+# without zip code
+reg = lm(price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + waterfront + view + condition + grade + sqft_above + sqft_basement + sqft_living15 + sqft_lot15 + yr_sales + month_sales + age_bin + age_renovated_bin, data=df)
 
 summary(reg)
 ```
+## Feature Normalization
+```{r fig.height = 10, fig.width = 12, fig.align = "center"}
+df %>%
+  keep(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+  facet_wrap(~ key, scales = "free") +
+  geom_histogram() +
+  geom_density(aes(y = ..count..), alpha = .2, fill = "#FF6666") +
+  theme_bw()
+```
+
+```{r fig.height = 10, fig.width = 12, fig.align = "center"}
+df %>%
+  select(price, sqft_above, sqft_living, sqft_lot, sqft_basement, sqft_living15, sqft_lot15) %>% 
+  gather() %>% 
+  ggplot(aes(log(value))) +
+  facet_wrap(~ key, scales = "free") +
+  geom_histogram() +
+  geom_density(aes(y = ..count..), alpha = .2, fill = "#FF6666") +
+  theme_bw()
+```
+These values will be better with logarithm transformation. Since `sqft_basement` is the only value with 0, I add +1 to avoid Inf values.
+
+```{r}
+df["price_log"] = log(df["price"])
+df["sqft_above_log"] = log(df["sqft_above"])
+df["sqft_basement_log"] = log(df["sqft_basement"]+1)
+df["sqft_living_log"] = log(df["sqft_living"])
+df["sqft_living15_log"] = log(df["sqft_living15"])
+df["sqft_lot_log"] = log(df["sqft_lot"])
+df["sqft_lot15_log"] = log(df["sqft_lot15"])
+```
 
 
+## One Hot Encoding `zipcode`
+- will drop the initial `zipcode = 98001`
 
+```{r}
+zipcode_dummies <- as.data.frame(dummy.code(df$zipcode))
+zipcode_dummies <- zipcode_dummies[, order(names(zipcode_dummies))]
+zipcode_dummies$`98001` <- NULL
+```
+```{r}
+df %>% glimpse()
 
-```{r fig.height = 10, fig.width = 15, fig.align = "center"}
+df %>% select(-c(price, sqft_living, sqft_lot, sqft_above, sqft_basement,
+                 zipcode, sqft_living15, sqft_lot15, yr_sales, month_sales)) ->
+  df
+```
+
+```{r}
+round(cor(df),2)
+```
+```{r}
+# without zipcode
+reg = lm(price_log ~ bedrooms + bathrooms + floors + waterfront + view + condition + 
+         grade + age_bin + age_renovated_bin + sqft_above_log + sqft_basement_log + 
+         sqft_living_log + sqft_living15_log + sqft_lot_log + sqft_lot15_log,
+         data = df)
+summary(reg)
+
 plot(reg)
 ```
+```{r}
+# attaching zipcode
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
