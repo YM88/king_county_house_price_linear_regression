@@ -8,6 +8,7 @@ output: pdf_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 options(scipen=999)
+options(max.print=1000000)
 ```
 
 ```{r}
@@ -17,6 +18,9 @@ library(car)
 library(psych)
 library(tidyverse)
 library(lubridate)
+library(scales)
+library(car)
+library(leaps)
 ```
 
 # Data Info
@@ -59,7 +63,7 @@ Dataset can be found at [kaggle](https://www.kaggle.com/harlfoxem/housesalespred
 
 **zipcode**: What zipcode area the house is in
 
-**lat**: Lattitude
+**lat**: Latitude
 
 **long**: Longitude
 
@@ -68,6 +72,7 @@ Dataset can be found at [kaggle](https://www.kaggle.com/harlfoxem/housesalespred
 **sqft_lot15**: The square footage of the land lots of the nearest 15 neighbors
 
 # Data Import
+
 ```{r}
 df = read_csv("data/kc_house_data.csv")
 glimpse(df)
@@ -77,8 +82,58 @@ glimpse(df)
 summary(df)
 ```
 
+Summary is showing there is ahouse with 33 bedrooms:
+
+```{r}
+df %>% 
+  filter(bedrooms==33)
+```
+
+Since the sqft of the house is only 1620, this has to be a data entry error:
+
+```{r}
+df[df$bedrooms==33,"bedrooms"] = 3
+```
+
+Also some houses do not have proper records for the number of bathrooms:
+
+```{r}
+df[df$bathrooms==0, ]
+```
+
+I will omit these values from the dataset.
+
+```{r}
+df %>% 
+  filter(bathrooms != 0) -> df
+```
+
 ```{r}
 df[duplicated(df),] #no duplicates
+```
+
+There are also houses that have been sold more than once, or there is data entry issue with them.
+
+```{r}
+df %>% 
+  count(id, sort = TRUE) %>% 
+  filter( n>1) %>% 
+  select(id) -> ids
+
+
+
+df %>% 
+  filter(id %in% ids[[1]])
+```
+
+I will only keep the last record of their sale.
+
+```{r}
+df %>% 
+  group_by(id) %>% 
+  arrange(desc(date)) %>% 
+  slice(1) %>% 
+  ungroup() -> df
 ```
 
 ## Initial findings and decisions based on data
@@ -93,6 +148,8 @@ Columns to be dropped:
 
 What if we fit the model without analyzing the data?
 
+### Base Score without `zipcode` = 65% Adjusted R-Square
+
 ```{r}
 reg = lm(price ~ bedrooms + bathrooms + sqft_living + 
            sqft_lot + floors + waterfront + view + condition + 
@@ -103,40 +160,9 @@ reg = lm(price ~ bedrooms + bathrooms + sqft_living +
 summary(reg)
 ```
 
-
-
-
-```{r fig.height = 10, fig.width = 15, fig.align = "center"}
+```{r fig.height = 8, fig.width = 12, fig.align = "center"}
+par(mfrow=c(2,2))
 plot(reg)
-```
-
-
-
-Quantitative:
-
-``` {.r}
-['price',
-'bedrooms',
-'bathrooms',
-'sqft_living',
-'sqft_lot',
-'floors',
-'view',
-'condition',
-'grade',
-'sqft_above',
-'sqft_basement',
-'yr_built',
-'yr_renovated',
-'sqft_living15',
-'sqft_lot15']
-```
-
-Categorical:
-
-``` {.r}
-['waterfront', 
-'zipcode']
 ```
 
 ```{r}
@@ -145,9 +171,9 @@ df %>%
 ```
 
 ```{r}
+# factorizing zip code
 df %>% 
-  mutate(waterfront = as_factor(waterfront),
-         zipcode = as_factor(zipcode)) -> 
+  mutate(zipcode = as_factor(zipcode)) -> 
   df
 ```
 
@@ -164,38 +190,36 @@ Out of 21613 records, only 163 has `waterfront`.
 
 ```{r}
 df %>% 
-  ggplot(aes(x=waterfront, y=price)) +
+  ggplot(aes(x=as_factor(waterfront), y=price, color=as_factor(waterfront))) +
   geom_boxplot() +
-  theme_bw()
+  theme_bw() +
+  labs(title = "Price Analysis of Houses with and without Waterfront", 
+       x = "Waterfront", y = "Price", color="Waterfront")
 ```
-
 
 ```{r}
 df %>% 
-  group_by(zipcode) %>% 
-  summarise(count = n()) %>% 
-  arrange(-count) %>% 
-  glimpse()
+  count(zipcode, sort = TRUE) %>% glimpse
 ```
 
 Highest occuring zip code is **98103** and least occuring is **98039** . There are 70 unique zip codes in total.
 
-Categorical analysis shows that most houses has no `waterfront` and the `zipcode` 98103 is the most occuring one in the dataframe.
-
-
-```{r fig.height = 15, fig.width = 15, fig.align = "center"}
+```{r fig.height = 8, fig.width = 12, fig.align = "center"}
 df %>% 
   ggplot(aes(x=fct_reorder(as_factor(zipcode), price), y=price)) +
   geom_boxplot() + 
   theme_bw() + 
-  labs(x='zipcode') +
+  labs(x='ZIP Code', y='Price', title = 'Price Analysis per ZIP Code') +
   theme(axis.text.x = element_text(angle = 90))
 ```
-zipcode can be a variable that can contribute to better prediction and there are 70 unique zip codes.
-The graph above shows that some areas have significantly different price distributions. Since the numerical value of zipcode cannot be used, it's better to create dummy variables. 
+
+`zipcode` can be a considered as a contributing variable to better prediction. There are 70 unique zip codes. The graph above shows that some areas have significantly different price distributions. Since the numerical value of `zipcode` cannot be used, it's better to create dummy variables or use it as a factor.
+
+```{r}
+df$zipcode <- as_factor(df$zipcode)
+```
 
 ## Quantitative
-
 
 ```{r fig.height = 15, fig.width = 15, fig.align = "center"}
 
@@ -210,103 +234,215 @@ df %>% slice_sample(n=500) %>% # sampling for 500 values, r is too slow
 
 ```{r fig.height = 5, fig.width = 8, fig.align = "center"}
 df %>% 
-  ggplot(aes(x=fct_reorder(as_factor(view), price), y=price)) +
+  ggplot(aes(x=fct_reorder(as_factor(condition), price), y=price, color=as_factor(condition))) +
   geom_boxplot() + 
-  labs(x='view') +
+  labs(x='Condition', y='Price', title = 'Price Analysis based on Condition', color='Condition') +
+  theme_bw()
+```
+
+It seems there's a slightly increasing pattern with price and `condition`, however, if we are to use `condition` as a numeric variable, there would be a problem between 4 and 3 since 3 has a slightly higher median. One way to tackle this is to group them together and redo the numbers.
+
+```{r}
+df %>% 
+  mutate(condition = case_when(condition == 2 ~ 1,
+                               condition == 4 ~ 2,
+                               condition == 3 ~ 2,
+                               condition == 5 ~ 3,
+                               TRUE ~ condition)) -> 
+  df
+
+df %>%  
+  ggplot(aes(x=fct_reorder(as_factor(condition), price), y=price, color=as_factor(condition))) +
+  geom_boxplot() + 
+  labs(x='Condition', y='Price', title = 'Price Analysis based on Condition', color='Condition') +
   theme_bw()
 ```
 
 ```{r fig.height = 5, fig.width = 8, fig.align = "center"}
 df %>% 
-  ggplot(aes(x=fct_reorder(as_factor(grade), price), y=price)) +
+  ggplot(aes(x=fct_reorder(as_factor(view), price), y=price, color=as_factor(view))) +
   geom_boxplot() + 
-  labs(x='grade') +
+  labs(x='View', y='Price', title = 'Price Analysis based on View', color='View') +
   theme_bw()
 ```
 
-It seems it would be ok to use `waterfront`, `view`, and `grade` as is.
+Similar approach applied to `view`.
 
 ```{r}
-df
+df %>% 
+  mutate(view= case_when(view == 0 ~ 1,
+                         view == 1 ~ 2,
+                         TRUE ~ view
+                         )) ->
+  df
+
+df %>% 
+  ggplot(aes(x=fct_reorder(as_factor(view), price), y=price, color=as_factor(view))) +
+  geom_boxplot() + 
+  labs(x='View', y='Price', title = 'Price Analysis based on View', color='View') +
+  theme_bw()
 ```
 
-# Feature Engineering
+This looks much better.
 
-## Year Values
+```{r fig.height = 5, fig.width = 8, fig.align = "center"}
+df %>% 
+  ggplot(aes(x=fct_reorder(as_factor(grade), price), y=price, 
+             color=as_factor(grade))) +
+  geom_boxplot() + 
+  labs(x='Grade', y='Price', title='Price Analysis based on Construction Grade',
+       color = 'Construction Grade') +
+  theme_bw()
+```
+
+I will apply a similar approach to `grade` and group close median grades in the same group.
 
 ```{r}
-# getting sales year and month and age 
+df %>% 
+  mutate(grade = case_when(grade <  4 ~ 1,
+                           grade <  8 ~ 2,
+                           grade < 11 ~ 3,
+                           TRUE       ~ 4)) -> df
+df %>%
+  ggplot(aes(x=fct_reorder(as_factor(grade), price), y=price, 
+             color=as_factor(grade))) +
+  geom_boxplot() + 
+  labs(x='Grade', y='Price', title='Price Analysis based on Construction Grade',
+       color = 'Construction Grade') +
+  theme_bw()
+  
+```
+
+This also looks better now.
+
+Since basement is not useful feature in regression, I'll use it as a categorical flag.
+
+```{r}
+df %>% 
+  mutate(basement = if_else(sqft_basement != 0, 1, 0)) -> df
+```
+
+## Year Values - Creating House Age and Renovation
+
+```{r}
+# getting house age 
 df %>% 
   mutate(yr_sales = year(date), 
-         month_sales = month(date),
          age = yr_sales - yr_built) ->
   df
 
-df[,c("yr_sales", "month_sales", "age")] %>% glimpse()
+df[,c("yr_sales", "age")] %>% glimpse()
 ```
 
 ```{r}
-# getting age_renovated before sales if there has been renovation
+# getting renovated before sales if there has been renovation
 df %>% 
-  mutate(age_renovated = 0,
-         age_renovated = if_else(yr_renovated != 0, 
-                                 yr_sales - yr_renovated, 
-                                 age)) -> df
+  mutate(renovated = 0,
+         renovated = if_else(yr_renovated != 0, 1, 0)) -> df
 
-df[,c("age", "age_renovated")] %>% glimpse()
+df[,c("age", "renovated")] %>% glimpse()
 ```
 
-
-
-
 ```{r}
-breaks = c(-2,1,5,10,20,30,50,100000)
-labels = c(0,5,10,20,30,60,100)
-
-df$age_bin = cut(df$age, breaks = breaks, labels = labels)
-
+summary(df$age)
 df %>% 
-  ggplot(aes(x=age_bin)) + 
-  geom_bar() + theme_bw()
-
+  filter(age<0) %>% 
+  select(date, yr_built, yr_sales, age)
 ```
+
+This is showing there are houses that are sold earlier than construction completion. We can either do binning or reset them to 0 instead.
+
 ```{r}
-breaks = c(-2,1,5,10,20,30,50,100000)
-labels = c(0,5,10,20,30,60,100)
-
-df$age_renovated_bin = cut(df$age_renovated, breaks = breaks, labels = labels)
-
+# replacing with zeros for age
 df %>% 
-  ggplot(aes(x=age_renovated_bin)) + 
-  geom_bar() + theme_bw()
-```
-```{r}
-# converting the age_bin and age_renovated_bin to numericals
-df$age_bin <- as.integer(df$age_bin)
-df$age_renovated_bin <- as.integer(df$age_renovated_bin)
-df$waterfront <- as.integer(df$waterfront)
+  mutate(age = if_else(age<0, 0, age)) %>% 
+  ggplot(aes(x=age, y=price)) + 
+  geom_point() + 
+  geom_smooth(method='lm') +
+  theme_bw()
 ```
 
-
-
 ```{r}
-# dropping date, yr_built, yr_renovated, 
-
 df %>% 
-  select(-c(date, yr_built, yr_renovated, age, age_renovated)) -> 
+  mutate(age = if_else(age<0, 0, age)) -> 
   df
 ```
 
+```{r}
+# dropping unnecessary columns
+df %>% 
+  select(-c(date, yr_built, yr_renovated, yr_sales, sqft_basement)) -> 
+  df
+```
 
 ```{r}
+df %>% glimpse()
+```
+
+### Second Regression without `zipcode` - 3% reduction in adjusted R-square 62%, `sqft_above` became significant
+
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
 # without zip code
-reg = lm(price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + waterfront + view + condition + grade + sqft_above + sqft_basement + sqft_living15 + sqft_lot15 + yr_sales + month_sales + age_bin + age_renovated_bin, data=df)
+reg = lm(price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + waterfront + 
+         view + condition + grade + sqft_above + basement + sqft_living15 + 
+         sqft_lot15 + age + renovated, data=df)
 
 summary(reg)
+par(mfrow=c(2,2))
+plot(reg)
 ```
+
+In this regression we have heteroskedasticity, non-normality, outlier and high-leverage. Our base adjusted r-square is 62% with no zip codes.
+
+### Third Regression without `zipcode` - adjusted R-square 62%, removing `sqft_living15` and `sqft_lot15` is not affecting the model significantly.
+
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+# without zip code
+reg = lm(price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + waterfront + 
+         view + condition + grade + sqft_above + basement + age + renovated, data=df)
+
+summary(reg)
+par(mfrow=c(2,2))
+plot(reg)
+```
+
+```{r}
+df %>% 
+  select(-sqft_living15, -sqft_lot15) -> 
+  df
+```
+
+### Fourth Regression with `zipcode` - adjusted R-square 80%!
+
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+reg = lm(price ~ bedrooms + bathrooms + sqft_living + sqft_lot + 
+           floors + waterfront + view + condition + grade + sqft_above + 
+           basement + age + renovated + zipcode, data=df)               # added zipcode
+
+summary(reg)
+par(mfrow=c(2,2))
+plot(reg)
+```
+
+With `zipcode` as a categorical variable we have a major R-square improvement. They add 18% to our response value variation explanation. Yet, we still don't have a nice forming residual cloud.
+
+## Splitting Train and Test Dataframes
+
+```{r}
+set.seed(42)
+sample <- sample.int(n = nrow(df), size = floor(.8*nrow(df)), replace = F)
+train <- df[sample, ]
+test  <- df[-sample, ]
+
+write_csv(df, "data/cleaned_df.csv")
+write_csv(train, "data/train.csv")
+write_csv(test, "data/test.csv")
+```
+
 ## Feature Normalization
+
 ```{r fig.height = 10, fig.width = 12, fig.align = "center"}
-df %>%
+train %>%
   keep(is.numeric) %>% 
   gather() %>% 
   ggplot(aes(value)) +
@@ -317,8 +453,8 @@ df %>%
 ```
 
 ```{r fig.height = 10, fig.width = 12, fig.align = "center"}
-df %>%
-  select(price, sqft_above, sqft_living, sqft_lot, sqft_basement, sqft_living15, sqft_lot15) %>% 
+train %>%
+  select(age, price, sqft_above, sqft_living, sqft_lot) %>% 
   gather() %>% 
   ggplot(aes(log(value))) +
   facet_wrap(~ key, scales = "free") +
@@ -326,195 +462,589 @@ df %>%
   geom_density(aes(y = ..count..), alpha = .2, fill = "#FF6666") +
   theme_bw()
 ```
-These values will be better with logarithm transformation. Since `sqft_basement` is the only value with 0, I add +1 to avoid Inf values.
+
+These values will be better with logarithm transformation. Since `age` have 0s, I add +1 to avoid Inf values.
 
 ```{r}
-df["price_log"] = log(df["price"])
-df["sqft_above_log"] = log(df["sqft_above"])
-df["sqft_basement_log"] = log(df["sqft_basement"]+1)
-df["sqft_living_log"] = log(df["sqft_living"])
-df["sqft_living15_log"] = log(df["sqft_living15"])
-df["sqft_lot_log"] = log(df["sqft_lot"])
-df["sqft_lot15_log"] = log(df["sqft_lot15"])
+train["age_log"] = log(train["age"]+1)
+train["price_log"] = log(train["price"])
+train["sqft_above_log"] = log(train["sqft_above"])
+train["sqft_living_log"] = log(train["sqft_living"])
+train["sqft_lot_log"] = log(train["sqft_lot"])
 ```
 
+### Fifth Regression - log(predictors) - adjusted R-square 75%
 
-## One Hot Encoding `zipcode`
-- will drop the initial `zipcode = 98001`
-
-```{r}
-zipcode_dummies <- as.data.frame(dummy.code(df$zipcode))
-zipcode_dummies <- zipcode_dummies[, order(names(zipcode_dummies))]
-zipcode_dummies$`98001` <- NULL
-```
-```{r}
-df %>% glimpse()
-
-df %>% select(-c(price, sqft_living, sqft_lot, sqft_above, sqft_basement,
-                 zipcode, sqft_living15, sqft_lot15, yr_sales, month_sales)) ->
-  df
-```
-
-```{r}
-round(cor(df),2)
-```
-```{r}
-# without zipcode
-reg = lm(price_log ~ bedrooms + bathrooms + floors + waterfront + view + condition + 
-         grade + age_bin + age_renovated_bin + sqft_above_log + sqft_basement_log + 
-         sqft_living_log + sqft_living15_log + sqft_lot_log + sqft_lot15_log,
-         data = df)
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+reg = lm(price ~ bedrooms + bathrooms + sqft_living_log + sqft_lot_log + floors + waterfront + 
+         view + condition + grade + sqft_above_log + basement +  age_log + renovated +
+           zipcode, data=train)
+par(mfrow=c(2,2))
 summary(reg)
-
 plot(reg)
 ```
+
+There's a 5% drop in adjusted r-square.
+
+### Sixth Regression - log(response)\~log(predictors) - adjusted R-square 87%!
+
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+reg = lm(price_log ~ bedrooms + bathrooms + sqft_living_log + sqft_lot_log + floors + waterfront + 
+         view + condition + grade + sqft_above_log + basement + age_log + renovated 
+         + zipcode, data=train)
+summary(reg)
+par(mfrow=c(2,2))
+plot(reg)
+
+```
+
+Predicting the logarithm of price, adds another 7% to our R-square to a total 87%.
+
+Residuals are still non-normal but its much better than before.
+
+### Seventh Regression - log(response) - adjusted R-square 87%
+
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+
+reg = lm(price_log ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + waterfront + 
+         view + condition + grade + sqft_above + basement + age + renovated + 
+           zipcode, data=train)
+summary(reg)
+par(mfrow=c(2,2))
+plot(reg)
+
+```
+
+no reduction in adjusted r-square which give us the flexibility in not normalizing the variables.
+
 ```{r}
-# attaching zipcode
+train %>% 
+  select(-c(sqft_above_log, sqft_living_log, sqft_lot_log, age_log)) ->
+  train
+```
+
+## Outlier and Leverage Analysis
+
+### Bonferroni-adjusted quantile from t-distribution.
+
+```{r}
+t = rstudent(reg) # Studentized residuals
+```
+
+```{r}
+summary(t)
+```
+
+> *In Bonferroni-adjusted quantile t-distribution, we look at the theoretical quantile value at an* $\alpha=0.05$ *thus our* $p=\frac{\alpha}{\frac{2}{n}}$ *and* $df=n-p-1=n-2$*.*
+
+```{r}
+n = length(train$price_log)
+n
+
+p = length(names(train))-1 #number of predictors
+
+p
+
+qt( 0.05/2/n, n-p-1 ) # qt(alpha/2/n, df) df = n-p-1 
+
+bonferroni_outliers <- t[ abs(t) > abs(qt( 0.025/n, n-p-1 )) ]
+
+length(bonferroni_outliers)
+
+```
+
+```{r}
+str_c(names(bonferroni_outliers), collapse = ", ")
+```
+
+```{r}
+bonferroni_indices <- c(27, 515, 547, 686, 1114, 1455, 1813, 1933, 2197, 2361, 3016,
+                        3942, 3993, 4377, 6345, 6831, 8447, 9040, 10054, 10317, 12547,
+                        12965, 13042, 14112, 14323, 16994)
+```
+
+```{r}
+# removing outliers
+train <- train[-bonferroni_indices,]
+```
+
+### Leverage
+
+Check for INFLUENTIAL DATA
+
+```{r}
+infl = influence(reg)
+leverage = infl$hat
+plot(leverage)
+```
+
+The resulting plot shows that few points are way off the leverage perimeter.
+
+```{r}
+#average leverage
+(p+1)/(length(train$price_log))
+```
+
+```{r}
+summary(infl$hat)
+```
+
+```{r}
+leverage_points <- leverage[leverage > 0.009]
+length(leverage_points) # this is too many points to remove
+```
+
+```{r}
+# leverage_indices <- as.integer(names(leverage_points))
+```
+
+```{r}
+# train <- train[-leverage_indices, ]
+```
+
+### Eighth Regression - log(response) after outlier and high leverage removal - adjusted R-square 87%
+
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+
+reg = lm(price_log ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + waterfront + 
+         view + condition + grade + sqft_above + basement + age + renovated + 
+         zipcode, data=train)
+summary(reg)
+par(mfrow=c(2,2))
+plot(reg)
+
+```
+
+### Shapiro-Wilk Normality Test
+
+```{r}
+shapiro.test(sample(t, 5000)) # maximum sample size for shapiro wilk is 5000
+```
+
+> *Since in here p is less than alpha we can say there is evidence for non normality.*
+
+### HOMOSCEDASTICITY (Constant Variance) Using Breausch-Pagan
+
+```{r}
+plot(fitted.values(reg), (rstudent(reg))^2, ylab = "Studentized Residuals^2", xlab="Fitted Values")
+```
+
+```{r}
+ncvTest(reg)
+```
+
+> \*Based on our p-value, we have significant evidence against homoskedasticity.
+
+# Fitting Polynomial Regression
+
+```{r}
+str_c("poly( ", names(train), ", 2)", collapse=" + ")
+```
+
+```{r}
+summary(train)
+```
+
+```{r}
+polynomial.fit = regsubsets(price_log ~ 
+                                        bedrooms 
+                                      + bathrooms 
+                                      + poly(sqft_living, 2)
+                                      + poly(sqft_lot,    2) 
+                                      + floors 
+                                      + waterfront 
+                                      + view 
+                                      + condition 
+                                      + grade 
+                                      + sqft_above
+                                      + basement
+                                      + poly(age,         3) 
+                                      + renovated, 
+                                        data=train, nvmax = 32) # zipcode is removed here will be added after
+summary(polynomial.fit)
+```
+
+```{r}
+summary(polynomial.fit)$adjr2
+which.max(summary(polynomial.fit)$adjr2)
+```
+
+```{r}
+summary(polynomial.fit)$cp
+which.min(summary(polynomial.fit)$cp)
+```
+
+```{r}
+summary(polynomial.fit)$bic
+which.min(summary(polynomial.fit)$bic)
+```
+
+decision on 14 variables.
+
+### Ninth Regression - Polynomial
+
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+reg = lm(price_log ~ 
+                      bedrooms 
+                    + bathrooms 
+                    + poly(sqft_living, 2)
+                    + poly(sqft_lot,    2) 
+                    + floors 
+                    + waterfront 
+                    + view 
+                    + condition 
+                    + grade 
+                    + sqft_above
+                    + basement
+                    + poly(age,         3) 
+                    + renovated
+                    + zipcode, 
+                      data=train)
+summary(reg)
+
+par(mfrow=c(2,2))
+plot(reg)
+```
+
+### Tenth - Regression - Stepwise
+
+```{r}
+null = lm( price_log ~ 1, data=train )
+full = lm( price_log ~ 
+                      bedrooms 
+                    + bathrooms 
+                    + poly(sqft_living, 2)
+                    + poly(sqft_lot,    2) 
+                    + floors 
+                    + waterfront 
+                    + view 
+                    + condition 
+                    + grade 
+                    + sqft_above
+                    + basement
+                    + poly(age,         3) 
+                    + renovated
+                    + zipcode, 
+                      data=train )
+
+step(null, scope=list(lower=null, upper=full), direction="forward" )
+```
+
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+reg = lm(price_log ~ zipcode + poly(sqft_living, 2) + view + 
+         grade + waterfront + poly(sqft_lot, 2) + sqft_above + condition + 
+         floors + poly(age, 3) + bathrooms + bedrooms + renovated + 
+         basement, data=train)
+summary(reg)
+
+par(mfrow=c(2,2))
+plot(reg)
+```
+
+## Outlier and Leverage Analysis
+
+### Bonferroni-adjusted quantile from t-distribution.
+
+```{r}
+t = rstudent(reg) # Studentized residuals
+```
+
+```{r}
+summary(t)
+```
+
+> *In Bonferroni-adjusted quantile t-distribution, we look at the theoretical quantile value at an* $\alpha=0.05$ *thus our* $p=\frac{\alpha}{\frac{2}{n}}$ *and* $df=n-p-1=n-2$*.*
+
+```{r}
+n = length(train$price_log)
+n
+
+p = length(names(train))-1 #number of predictors
+
+p
+
+qt( 0.05/2/n, n-p-1 ) # qt(alpha/2/n, df) df = n-p-1 
+
+bonferroni_outliers <- t[ abs(t) > abs(qt( 0.025/n, n-p-1 )) ]
+
+length(bonferroni_outliers)
+
+```
+
+```{r}
+str_c(names(bonferroni_outliers), collapse = ", ")
+```
+
+```{r}
+bonferroni_indices <- c(964, 9829, 10182, 11410, 11663, 13427, 14176, 15415)
+```
+
+```{r}
+# removing outliers
+train <- train[-bonferroni_indices,]
+```
+
+### Leverage
+
+Check for INFLUENTIAL DATA
+
+```{r}
+infl = influence(reg)
+leverage = infl$hat
+plot(leverage)
+```
+
+The resulting plot shows that few points are way off the leverage perimeter.
+
+```{r}
+#average leverage
+(p+1)/(length(train$price_log))
+```
+
+```{r}
+summary(infl$hat)
+```
+
+```{r}
+leverage_points <- leverage[leverage > 0.01]
+length(leverage_points) # this is too many points to remove
+```
+
+```{r}
+leverage_indices <- as.integer(names(leverage_points))
+```
+
+```{r}
+train_nolev <- train[-leverage_indices, ]
+```
+
+### Eleventh Regression - log(response) after outlier and high leverage removal - adjusted R-square 87%
+
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+
+reg = lm(price_log ~ 
+                      bedrooms 
+                    + bathrooms 
+                    + poly(sqft_living, 2)
+                    + poly(sqft_lot,    2) 
+                    + floors 
+                    + waterfront 
+                    + view 
+                    + condition 
+                    + grade 
+                    + sqft_above
+                    + basement
+                    + poly(age,         3) 
+                    + renovated
+                    + zipcode, data=train_nolev)
+summary(reg)
+par(mfrow=c(2,2))
+plot(reg)
+
+```
+
+There's not a significant improvement on adjusted R-square as well as the non normality of the residuals.
+
+## What about Box-cox?
+
+```{r}
+reg = lm(price ~ 
+                      bedrooms 
+                    + bathrooms 
+                    + poly(sqft_living, 2)
+                    + poly(sqft_lot,    2) 
+                    + floors 
+                    + waterfront 
+                    + view 
+                    + condition 
+                    + grade 
+                    + sqft_above
+                    + basement
+                    + poly(age,         3) 
+                    + renovated
+                    + zipcode, data=train)
+summary(reg)
+
+par(mfrow=c(2,2))
+plot(reg)
+```
+
+```{r}
+boxcox(reg,lambda=seq(-0.02,-0.01,0.001))
 
 ```
 
 
+### Twelveth Regression - BoxCox (Price) - Adjusted R-square 88.19%
 
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
+reg = lm(price^(0.18) ~ 
+                      bedrooms 
+                    + bathrooms 
+                    + poly(sqft_living, 2)
+                    + poly(sqft_lot,    2) 
+                    + floors 
+                    + waterfront 
+                    + view 
+                    + condition 
+                    + grade 
+                    + sqft_above
+                    + basement
+                    + poly(age,         3) 
+                    + renovated
+                    + zipcode, data=train)
+summary(reg)
+
+par(mfrow=c(2,2))
+plot(reg)
+```
+
+## Outlier and Leverage Analysis
+
+### Bonferroni-adjusted quantile from t-distribution.
 
+```{r}
+t = rstudent(reg) # Studentized residuals
+```
 
+```{r}
+summary(t)
+```
 
+> *In Bonferroni-adjusted quantile t-distribution, we look at the theoretical quantile value at an* $\alpha=0.05$ *thus our* $p=\frac{\alpha}{\frac{2}{n}}$ *and* $df=n-p-1=n-2$*.*
 
+```{r}
+n = length(train$price)
+n
 
+p = length(names(train))-1 #number of predictors
 
+p
 
+qt( 0.05/2/n, n-p-1 ) # qt(alpha/2/n, df) df = n-p-1 
 
+bonferroni_outliers <- t[ abs(t) > abs(qt( 0.025/n, n-p-1 )) ]
 
+length(bonferroni_outliers)
 
+```
 
+```{r}
+str_c(names(bonferroni_outliers), collapse = ", ")
+```
 
+```{r}
+bonferroni_indices <- c(2155, 2361, 2613, 5058, 5482, 6817, 7914, 11980, 14155, 15890, 15932, 16717)
+```
 
+```{r}
+# removing outliers
+train <- train[-bonferroni_indices,]
+```
 
+### Leverage
 
+Check for INFLUENTIAL DATA
 
+```{r}
+infl = influence(reg)
+leverage = infl$hat
+plot(leverage)
+```
 
+The resulting plot shows that few points are way off the leverage perimeter.
 
+```{r}
+#average leverage
+(p+1)/(length(train$price_log))
+```
 
+```{r}
+summary(infl$hat)
+```
 
+```{r}
+leverage_points <- leverage[leverage > 0.02]
+length(leverage_points) 
+```
 
+```{r}
+leverage_indices <- as.integer(names(leverage_points))
+```
 
+```{r}
+train_nolev <- train[-leverage_indices, ]
+```
 
+### Thirteenth Regression - boxcox(response) after outlier and high leverage removal - adjusted R-square 88.32%
 
+```{r fig.height = 8, fig.width = 10, fig.align = "center"}
 
+reg = lm(price^(0.18) ~ 
+                      bedrooms 
+                    + bathrooms 
+                    + poly(sqft_living, 2)
+                    + poly(sqft_lot,    2) 
+                    + floors 
+                    + waterfront 
+                    + view 
+                    + condition 
+                    + grade 
+                    + sqft_above
+                    + basement
+                    + poly(age,         3) 
+                    + renovated
+                    + zipcode, data=train_nolev)
+summary(reg)
 
+par(mfrow=c(2,2))
+plot(reg)
 
+```
 
+# Testing on test dataset
 
+```{r}
+SS.test.total      <- sum((test$price^(0.18) - mean(train$price^(0.18)))^2)
 
+SS.test.residual   <- sum((test$price^(0.18) - predict(reg, test))^2)
 
+SS.test.regression <- sum((predict(reg, test) - mean(train$price^(0.18)))^2)
 
+SS.test.total - (SS.test.regression+SS.test.residual)
 
+test.rsq <- 1 - SS.test.residual/SS.test.total  
+test.rsq
 
+# fraction of variability explained by the model
+SS.test.regression/SS.test.total 
+```
 
+# Random Forest
 
+```{r}
+library(h2o)
+h2o.init()
+```
 
+```{r}
+train <- h2o.importFile("data/train.csv")
+# Set predictors and response
 
+train["zipcode"] <- as.factor(train["zipcode"])
+predictors <- c("bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors",
+                "waterfront", "view", "condition", "grade", "sqft_above",
+                "basement", "zipcode", "age", "renovated")
 
+response <- "price"
+```
 
+```{r}
+# Train the DRF model
+drf <- h2o.randomForest(x = predictors, y = response, training_frame = train,
+                        nfolds = 5, seed = 42, model_id = "Random Forest")
+```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+```{r}
+summary(drf)
+```
